@@ -1,0 +1,31 @@
+name: Publish analytics to GitHub Packages
+
+on:
+  push:
+    tags: ["v*"]          # e.g. git tag v1.0.1 && git push origin v1.0.1
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests
+        run: ./gradlew :analytics:testDebugUnitTest
+      - name: Publish
+        env:
+          GITHUB_ACTOR: ${{ github.actor }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          if [ "${GITHUB_REF_TYPE}" != "tag" ]; then VERSION="0.0.0-SNAPSHOT-${GITHUB_RUN_NUMBER}"; fi
+          ./gradlew :analytics:publishReleasePublicationToGitHubPackagesRepository -Panalytics.version="$VERSION"
