@@ -1,4 +1,4 @@
-package com.game.analytics
+package com.ogl.game.analytics
 
 import com.ogl.game.analytics.validation.AnalyticsValidator
 import com.ogl.game.analytics.AnalyticsConfig

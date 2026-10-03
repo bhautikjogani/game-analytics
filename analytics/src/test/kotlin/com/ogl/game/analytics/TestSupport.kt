@@ -1,12 +1,10 @@
-package com.game.analytics
+package com.ogl.game.analytics
 
-import com.ogl.game.analytics.AnalyticsConfig
 import com.ogl.game.analytics.core.AnalyticsClock
 import com.ogl.game.analytics.core.AnalyticsEngine
 import com.ogl.game.analytics.core.AppInfo
 import com.ogl.game.analytics.country.CountryProvider
 import com.ogl.game.analytics.firebase.AnalyticsBackend
-import com.ogl.game.analytics.AnalyticsManager
 import com.ogl.game.analytics.logging.AnalyticsLogger
 import com.ogl.game.analytics.session.GameSessionManager
 import com.ogl.game.analytics.storage.AnalyticsStorage

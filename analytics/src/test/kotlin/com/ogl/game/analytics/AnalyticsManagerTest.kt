@@ -1,6 +1,5 @@
-package com.game.analytics
+package com.ogl.game.analytics
 
-import com.ogl.game.analytics.AnalyticsConfig
 import org.junit.Assert.*
 import org.junit.Test
 
