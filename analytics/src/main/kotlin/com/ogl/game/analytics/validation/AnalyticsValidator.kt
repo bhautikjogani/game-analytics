@@ -82,7 +82,10 @@ class AnalyticsValidator(private val config: AnalyticsConfig) {
             issues += "reserved user property '$n'"
             n = null
         }
-        if (v != null && v.length > MAX_USER_PROPERTY_VALUE) {
+        if (v != null && v.isBlank()) {
+            issues += "user property value is blank, converted to null"
+            v = null
+        } else if (v != null && v.length > MAX_USER_PROPERTY_VALUE) {
             issues += "user property value truncated to $MAX_USER_PROPERTY_VALUE chars"
             v = v.take(MAX_USER_PROPERTY_VALUE)
         }
@@ -98,12 +101,12 @@ class AnalyticsValidator(private val config: AnalyticsConfig) {
         if (config.strictValidation && issues.isNotEmpty()) Result(null, issues) else Result(value, issues)
 
     private fun coerce(value: Any): Any? = when (value) {
-        is String -> value
+        is String -> value.takeIf { it.isNotBlank() }
         is Boolean -> if (value) 1L else 0L // Firebase has no boolean type
         is Int, is Long, is Short, is Byte -> (value as Number).toLong()
         is Float, is Double -> (value as Number).toDouble().takeIf { it.isFinite() }
         is Enum<*> -> value.name.lowercase()
-        is CharSequence -> value.toString()
+        is CharSequence -> value.toString().takeIf { it.isNotBlank() }
         else -> null
     }
 
