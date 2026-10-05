@@ -1,6 +1,7 @@
 package com.ogl.game.analytics
 
 import android.content.Context
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.telephony.TelephonyManager
 import android.util.Log
@@ -8,28 +9,49 @@ import com.google.firebase.analytics.FirebaseAnalytics
 import com.ogl.game.analytics.firebase.AnalyticsBackend
 import com.ogl.game.analytics.firebase.FirebaseAnalyticsAdapter
 import com.ogl.game.analytics.firebase.NoOpAnalyticsBackend
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
 
 /**
- * A highly generic, stable, and clean Analytics Manager for apps and games.
- * Automatically handles UUID, Timestamps, Country, and Session Durations.
+ * A highly generic, stable, and production-ready Analytics Manager.
+ * Automatically handles Persistent UUIDs, Timestamps, Country, and Session Durations in the background.
  */
 class CoreAnalyticsManager private constructor(
     private val context: Context,
     private val backend: AnalyticsBackend
 ) {
-    // Stores active sessions/timers to automatically calculate durations
-    private val activeTimers = mutableMapOf<String, Long>()
+    // Thread-safe map for timers
+    private val activeTimers = ConcurrentHashMap<String, Long>()
     
-    // Auto-generated UUID for the user/device.
-    private var userUUID: String = UUID.randomUUID().toString()
+    // Background scope to prevent main-thread UI lag during fast event spam
+    private val analyticsScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    private val prefs: SharedPreferences = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    
+    // Persistent UUID
+    private val userUUID: String = loadOrGenerateUUID()
     
     // Auto-detected country
     private val country: String = getCountryCode(context)
 
+    // Consent toggle
+    @Volatile
+    var isEnabled: Boolean = true
+        set(value) {
+            field = value
+            backend.setCollectionEnabled(value)
+        }
+
     companion object {
         private const val TAG = "CoreAnalytics"
+        private const val PREFS_NAME = "analytics_prefs"
+        private const val PREF_UUID = "user_uuid_pref"
+        
         const val PARAM_UUID = "user_uuid"
         const val PARAM_TIMESTAMP = "timestamp"
         const val PARAM_DURATION = "duration_seconds"
@@ -57,49 +79,63 @@ class CoreAnalyticsManager private constructor(
         backend.setUserProperty(PARAM_COUNTRY, country)
     }
 
+    private fun loadOrGenerateUUID(): String {
+        var uuid = prefs.getString(PREF_UUID, null)
+        if (uuid.isNullOrBlank()) {
+            uuid = UUID.randomUUID().toString()
+            prefs.edit().putString(PREF_UUID, uuid).apply()
+        }
+        return uuid
+    }
+
     /**
-     * Standard event tracker. Auto-injects UUID, Timestamp, and Country.
+     * Standard event tracker. Processes safely on a background thread.
      */
     fun track(eventName: String, params: Map<String, Any?> = emptyMap()) {
-        val safeEventName = eventName.take(40).replace(Regex("[^a-zA-Z0-9_]"), "_").trim('_')
-        if (safeEventName.isBlank()) return
+        if (!isEnabled) return
 
-        val safeParams = mutableMapOf<String, Any>()
-        
-        // 1. Auto-inject Global Properties
-        safeParams[PARAM_UUID] = userUUID
-        safeParams[PARAM_TIMESTAMP] = System.currentTimeMillis()
-        safeParams[PARAM_COUNTRY] = country
+        // Launch in background so Regex formatting never blocks the game's framerate
+        analyticsScope.launch {
+            val safeEventName = eventName.take(40).replace(Regex("[^a-zA-Z0-9_]"), "_").trim('_')
+            if (safeEventName.isBlank()) return@launch
 
-        // 2. Add and sanitize custom parameters
-        params.forEach { (key, value) ->
-            if (value == null) return@forEach
-            if (value is String && value.isBlank()) return@forEach
+            val safeParams = mutableMapOf<String, Any>()
+            
+            // 1. Auto-inject Global Properties
+            safeParams[PARAM_UUID] = userUUID
+            safeParams[PARAM_TIMESTAMP] = System.currentTimeMillis()
+            safeParams[PARAM_COUNTRY] = country
 
-            val safeKey = key.take(40).replace(Regex("[^a-zA-Z0-9_]"), "_")
-            when (value) {
-                is String -> safeParams[safeKey] = value.take(100)
-                is Number -> {
-                    if (value is Float || value is Double) safeParams[safeKey] = value.toDouble()
-                    else safeParams[safeKey] = value.toLong()
+            // 2. Add and sanitize custom parameters
+            params.forEach { (key, value) ->
+                if (value == null) return@forEach
+                if (value is String && value.isBlank()) return@forEach
+
+                val safeKey = key.take(40).replace(Regex("[^a-zA-Z0-9_]"), "_")
+                when (value) {
+                    is String -> safeParams[safeKey] = value.take(100)
+                    is Number -> {
+                        if (value is Float || value is Double) safeParams[safeKey] = value.toDouble()
+                        else safeParams[safeKey] = value.toLong()
+                    }
+                    is Boolean -> safeParams[safeKey] = if (value) 1L else 0L
                 }
-                is Boolean -> safeParams[safeKey] = if (value) 1L else 0L
             }
-        }
 
-        try {
-            backend.logEvent(safeEventName, safeParams)
-            Log.d(TAG, "Logged: $safeEventName -> $safeParams")
-        } catch (e: Exception) {
-            Log.e(TAG, "Error logging event", e)
+            try {
+                backend.logEvent(safeEventName, safeParams)
+                Log.d(TAG, "Logged: $safeEventName -> $safeParams")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error logging event", e)
+            }
         }
     }
 
     /**
      * Starts a timer/session. Useful for "Start Game" or "Screen Open".
-     * @param timerId A unique ID for this session (e.g., "game_match_1")
      */
     fun startTimerEvent(timerId: String, eventName: String, params: Map<String, Any?> = emptyMap()) {
+        if (!isEnabled) return
         activeTimers[timerId] = System.currentTimeMillis()
         
         val enhancedParams = params.toMutableMap()
@@ -112,6 +148,7 @@ class CoreAnalyticsManager private constructor(
      * Ends a timer/session. Auto-calculates the duration since startTimerEvent was called.
      */
     fun stopTimerEvent(timerId: String, eventName: String, params: Map<String, Any?> = emptyMap()) {
+        if (!isEnabled) return
         val enhancedParams = params.toMutableMap()
         enhancedParams["action"] = "stop"
 
@@ -140,9 +177,12 @@ class CoreAnalyticsManager private constructor(
      * Set a custom global user property
      */
     fun setUserProperty(name: String, value: String?) {
-        val safeName = name.take(24)
-        val safeValue = if (value.isNullOrBlank()) null else value.take(36)
-        backend.setUserProperty(safeName, safeValue)
+        if (!isEnabled) return
+        analyticsScope.launch {
+            val safeName = name.take(24)
+            val safeValue = if (value.isNullOrBlank()) null else value.take(36)
+            backend.setUserProperty(safeName, safeValue)
+        }
     }
 
     private fun getCountryCode(context: Context): String {
